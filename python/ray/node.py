@@ -15,6 +15,7 @@ import ray.ray_constants as ray_constants
 from ray.tempfile_services import (
     get_logs_dir_path, get_object_store_socket_name, get_raylet_socket_name,
     new_log_monitor_log_file, new_monitor_log_file,
+    new_reporter_log_file,
     new_raylet_monitor_log_file, new_plasma_store_log_file,
     new_raylet_log_file, new_webui_log_file, set_temp_root,
     try_to_create_directory)
@@ -157,6 +158,19 @@ class Node(object):
             process_info
         ]
 
+    def start_reporter(self):
+        """Start the reporter."""
+        stdout_file, stderr_file = new_reporter_log_file()
+        process_info = ray.services.start_reporter(
+            self.redis_address,
+            stdout_file=stdout_file,
+            stderr_file=stderr_file,
+            redis_password=self._ray_params.redis_password)
+        assert ray_constants.PROCESS_TYPE_REPORTER not in self.all_processes
+        self.all_processes[ray_constants.PROCESS_TYPE_REPORTER] = [
+            process_info
+        ]
+
     def start_ui(self):
         """Start the web UI."""
         stdout_file, stderr_file = new_webui_log_file()
@@ -283,6 +297,7 @@ class Node(object):
 
         self.start_plasma_store()
         self.start_raylet()
+        self.start_reporter()
 
         if self._ray_params.include_log_monitor:
             self.start_log_monitor()
@@ -416,6 +431,16 @@ class Node(object):
         """
         self._kill_process_type(
             ray_constants.PROCESS_TYPE_LOG_MONITOR, check_alive=check_alive)
+
+    def kill_reporter(self, check_alive=True):
+        """Kill the reporter.
+
+        Args:
+            check_alive (bool): Raise an exception if the process was already
+                dead.
+        """
+        self._kill_process_type(
+            ray_constants.PROCESS_TYPE_REPORTER, check_alive=check_alive)
 
     def kill_monitor(self, check_alive=True):
         """Kill the monitor.
