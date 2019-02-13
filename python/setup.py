@@ -146,6 +146,9 @@ requires = [
     "six >= 1.0.0",
     "flatbuffers",
     "faulthandler;python_version<'3.3'",
+    # simplejson and psutil are required by the Reporter.
+    "simplejson",
+    "psutil",
 ]
 
 setup(
