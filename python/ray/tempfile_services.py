@@ -219,6 +219,13 @@ def new_log_monitor_log_file():
     return log_monitor_stdout_file, log_monitor_stderr_file
 
 
+def new_reporter_log_file():
+    """Create new logging files for the reporter."""
+    reporter_stdout_file, reporter_stderr_file = new_log_files(
+        "reporter", redirect_output=True)
+    return reporter_stdout_file, reporter_stderr_file
+
+
 def new_plasma_store_log_file(redirect_output):
     """Create new logging files for the plasma store."""
     plasma_store_stdout_file, plasma_store_stderr_file = new_log_files(
