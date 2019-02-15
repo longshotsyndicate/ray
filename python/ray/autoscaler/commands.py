@@ -12,6 +12,7 @@ import logging
 import sys
 import click
 import random
+import uuid
 
 import yaml
 try:  # py3
@@ -127,30 +128,34 @@ def kill_node(config_file, yes, override_cluster_name):
     confirm("This will kill a node in your cluster", yes)
 
     provider = get_node_provider(config["provider"], config["cluster_name"])
-    nodes = provider.nodes({TAG_RAY_NODE_TYPE: "worker"})
-    node = random.choice(nodes)
-    logger.info("kill_node: Terminating worker {}".format(node))
+    try:
+        nodes = provider.nodes({TAG_RAY_NODE_TYPE: "worker"})
+        node = random.choice(nodes)
+        logger.info("kill_node: Terminating worker {}".format(node))
 
-    updater = NodeUpdaterThread(
-        node_id=node,
-        provider_config=config["provider"],
-        provider=provider,
-        auth_config=config["auth"],
-        cluster_name=config["cluster_name"],
-        file_mounts=config["file_mounts"],
-        initialization_commands=[],
-        setup_commands=[],
-        runtime_hash="")
+        updater = NodeUpdaterThread(
+            node_id=node,
+            provider_config=config["provider"],
+            provider=provider,
+            auth_config=config["auth"],
+            cluster_name=config["cluster_name"],
+            file_mounts=config["file_mounts"],
+            initialization_commands=[],
+            setup_commands=[],
+            runtime_hash="")
 
-    _exec(updater, "ray stop", False, False)
+        _exec(updater, "ray stop", False, False)
 
-    time.sleep(5)
+        time.sleep(5)
 
-    iip = provider.internal_ip(node)
-    if iip:
-        return iip
+        if config.get("provider", {}).get("use_internal_ips", False) == True:
+            node_ip = provider.internal_ip(node)
+        else:
+            node_ip = provider.external_ip(node)
+    finally:
+        provider.cleanup()
 
-    return provider.external_ip(node)
+    return node_ip
 
 
 def get_or_create_head_node(config, config_file, no_restart, restart_only, yes,
@@ -246,14 +251,19 @@ def get_or_create_head_node(config, config_file, no_restart, restart_only, yes,
         # Refresh the node cache so we see the external ip if available
         provider.nodes(head_node_tags)
 
+        if config.get("provider", {}).get("use_internal_ips", False) == True:
+            head_node_ip = provider.internal_ip(head_node)
+        else:
+            head_node_ip = provider.external_ip(head_node)
+
         if updater.exitcode != 0:
             logger.error("get_or_create_head_node: "
                          "Updating {} failed".format(
-                             provider.external_ip(head_node)))
+                             head_node_ip))
             sys.exit(1)
         logger.info("get_or_create_head_node: "
                     "Head node up-to-date, IP address is: {}".format(
-                        provider.external_ip(head_node)))
+                        head_node_ip))
 
         monitor_str = "tail -n 100 -f /tmp/ray/session_*/logs/monitor*"
         use_docker = bool(config["docker"]["container_name"])
@@ -268,10 +278,42 @@ def get_or_create_head_node(config, config_file, no_restart, restart_only, yes,
                   quote(monitor_str), modifiers))
         print("To open a console on the cluster:\n\n"
               "  ray attach {}{}\n".format(config_file, modifiers))
+
         print("To ssh manually to the cluster, run:\n\n"
               "  ssh -i {} {}@{}\n".format(config["auth"]["ssh_private_key"],
                                            config["auth"]["ssh_user"],
-                                           provider.external_ip(head_node)))
+                                           head_node_ip))
+
+        def print_dashboard_url():
+            # Random temporary file
+            fn = "/tmp/ray_dashboard_url-{}".format(uuid.uuid4())
+            try:
+                os.unlink(fn)  # In case it's already there
+            except Exception:
+                pass
+            updater.rsync_down(
+                "/tmp/ray/dashboard_url", fn,
+                redirect=open("/dev/null", "w")
+            )
+            with open(fn, "r") as f:
+                print("To view the dashboard, go to:\n\n   {}\n".format(f.read()))
+            os.unlink(fn)
+
+        # Wait a bit to grab the dashboard URL.
+        success = False
+        for _ in range(15):
+            try:
+                print_dashboard_url()
+                success = True
+                break
+            except Exception:
+                logger.info("Failed to get the dashboard URL, trying again...")
+                pass
+            time.sleep(1)
+
+        if not success:
+            logger.error("Failed to get the dashboard URL, gave up.")
+
     finally:
         provider.cleanup()
 
@@ -456,11 +498,14 @@ def get_head_node_ip(config_file, override_cluster_name):
     provider = get_node_provider(config["provider"], config["cluster_name"])
     try:
         head_node = _get_head_node(config, config_file, override_cluster_name)
-        ip = provider.external_ip(head_node)
+        if config.get("provider", {}).get("use_internal_ips", False) == True:
+            head_node_ip = provider.internal_ip(head_node)
+        else:
+            head_node_ip = provider.external_ip(head_node)
     finally:
         provider.cleanup()
 
-    return ip
+    return head_node_ip
 
 
 def get_worker_node_ips(config_file, override_cluster_name):
@@ -469,10 +514,17 @@ def get_worker_node_ips(config_file, override_cluster_name):
     config = yaml.load(open(config_file).read())
     if override_cluster_name is not None:
         config["cluster_name"] = override_cluster_name
-    provider = get_node_provider(config["provider"], config["cluster_name"])
-    nodes = provider.nodes({TAG_RAY_NODE_TYPE: "worker"})
-    return [provider.external_ip(node) for node in nodes]
 
+    provider = get_node_provider(config["provider"], config["cluster_name"])
+    try:
+        nodes = provider.nodes({TAG_RAY_NODE_TYPE: "worker"})
+
+        if config.get("provider", {}).get("use_internal_ips", False) == True:
+            return [provider.internal_ip(node) for node in nodes]
+        else:
+            return [provider.external_ip(node) for node in nodes]
+    finally:
+        provider.cleanup()
 
 def _get_head_node(config,
                    config_file,
