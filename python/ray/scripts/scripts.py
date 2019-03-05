@@ -612,6 +612,8 @@ def submit(cluster_config_file, screen, tmux, stop, start, cluster_name,
     """
     assert not (screen and tmux), "Can specify only one of `screen` or `tmux`."
 
+    docker = False
+
     if start:
         create_or_update_cluster(cluster_config_file, None, None, False, False,
                                  True, cluster_name)
@@ -620,7 +622,7 @@ def submit(cluster_config_file, screen, tmux, stop, start, cluster_name,
     rsync(cluster_config_file, script, target, cluster_name, down=False)
 
     cmd = " ".join(["python", target] + list(script_args))
-    exec_cluster(cluster_config_file, cmd, screen, tmux, stop, False,
+    exec_cluster(cluster_config_file, cmd, docker, screen, tmux, stop, False,
                  cluster_name, port_forward)
 
 
