@@ -242,7 +242,7 @@ class NodeStats(threading.Thread):
 
     def purge_outdated_stats(self):
         def current(then, now):
-            if (now - then) > 5:
+            if (now - then) > 20:
                 return False
 
             return True
