@@ -79,14 +79,13 @@ public class Worker {
    * Execute a task.
    */
   public void execute(TaskSpec spec) {
-    LOGGER.info("Executing task {}", spec.taskId);
     LOGGER.debug("Executing task {}", spec);
     UniqueId returnId = spec.returnIds[0];
     ClassLoader oldLoader = Thread.currentThread().getContextClassLoader();
     try {
       // Get method
       RayFunction rayFunction = runtime.getFunctionManager()
-          .getFunction(spec.driverId, spec.functionDescriptor);
+          .getFunction(spec.driverId, spec.getJavaFunctionDescriptor());
       // Set context
       runtime.getWorkerContext().setCurrentTask(spec, rayFunction.classLoader);
       Thread.currentThread().setContextClassLoader(rayFunction.classLoader);
@@ -123,7 +122,7 @@ public class Worker {
         maybeLoadCheckpoint(result, returnId);
         currentActor = result;
       }
-      LOGGER.info("Finished executing task {}", spec.taskId);
+      LOGGER.debug("Finished executing task {}", spec.taskId);
     } catch (Exception e) {
       LOGGER.error("Error executing task " + spec, e);
       if (!spec.isActorCreationTask()) {

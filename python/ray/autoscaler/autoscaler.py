@@ -520,7 +520,7 @@ class StandardAutoscaler(object):
         aggressive = self.config["aggressive_autoscaling"]
         if self.bringup:
             ideal_num_workers = max(ideal_num_workers, initial_workers)
-        elif aggressive and ideal_num_workers >= 0:
+        elif aggressive and cur_used > 0:
             # If we want any workers, we want at least initial_workers
             ideal_num_workers = max(ideal_num_workers, initial_workers)
 

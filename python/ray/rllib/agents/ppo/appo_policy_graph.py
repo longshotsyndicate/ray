@@ -48,7 +48,7 @@ class PPOSurrogateLoss(object):
                  advantages,
                  value_targets,
                  vf_loss_coeff=0.5,
-                 entropy_coeff=-0.01,
+                 entropy_coeff=0.01,
                  clip_param=0.3):
 
         logp_ratio = tf.exp(actions_logp - prev_actions_logp)
@@ -71,7 +71,7 @@ class PPOSurrogateLoss(object):
             tf.boolean_mask(actions_entropy, valid_mask))
 
         # The summed weighted loss
-        self.total_loss = (self.pi_loss + self.vf_loss * vf_loss_coeff +
+        self.total_loss = (self.pi_loss + self.vf_loss * vf_loss_coeff -
                            self.entropy * entropy_coeff)
 
 
@@ -91,7 +91,7 @@ class VTraceSurrogateLoss(object):
                  bootstrap_value,
                  valid_mask,
                  vf_loss_coeff=0.5,
-                 entropy_coeff=-0.01,
+                 entropy_coeff=0.01,
                  clip_rho_threshold=1.0,
                  clip_pg_rho_threshold=1.0,
                  clip_param=0.3):
@@ -152,7 +152,7 @@ class VTraceSurrogateLoss(object):
             tf.boolean_mask(actions_entropy, valid_mask))
 
         # The summed weighted loss
-        self.total_loss = (self.pi_loss + self.vf_loss * vf_loss_coeff +
+        self.total_loss = (self.pi_loss + self.vf_loss * vf_loss_coeff -
                            self.entropy * entropy_coeff)
 
 
@@ -171,16 +171,17 @@ class AsyncPPOPolicyGraph(LearningRateSchedule, TFPolicyGraph):
 
         if isinstance(action_space, gym.spaces.Discrete):
             is_multidiscrete = False
-            actions_shape = [None]
             output_hidden_shape = [action_space.n]
         elif isinstance(action_space, gym.spaces.multi_discrete.MultiDiscrete):
             is_multidiscrete = True
-            actions_shape = [None, len(action_space.nvec)]
             output_hidden_shape = action_space.nvec.astype(np.int32)
-        else:
+        elif self.config["vtrace"]:
             raise UnsupportedSpaceException(
-                "Action space {} is not supported for APPO.",
+                "Action space {} is not supported for APPO + VTrace.",
                 format(action_space))
+        else:
+            is_multidiscrete = False
+            output_hidden_shape = 1
 
         # Policy network model
         dist_class, logit_dim = ModelCatalog.get_action_dist(
@@ -200,7 +201,7 @@ class AsyncPPOPolicyGraph(LearningRateSchedule, TFPolicyGraph):
                 existing_state_in = existing_inputs[9:-1]
                 existing_seq_lens = existing_inputs[-1]
         else:
-            actions = tf.placeholder(tf.int64, actions_shape, name="ac")
+            actions = ModelCatalog.get_action_placeholder(action_space)
             dones = tf.placeholder(tf.bool, [None], name="dones")
             rewards = tf.placeholder(tf.float32, [None], name="rewards")
             behaviour_logits = tf.placeholder(
@@ -234,6 +235,7 @@ class AsyncPPOPolicyGraph(LearningRateSchedule, TFPolicyGraph):
                 "is_training": self._get_is_training_placeholder(),
             },
             observation_space,
+            action_space,
             logit_dim,
             self.config["model"],
             state_in=existing_state_in,

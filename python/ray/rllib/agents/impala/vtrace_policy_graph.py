@@ -35,7 +35,7 @@ class VTraceLoss(object):
                  bootstrap_value,
                  valid_mask,
                  vf_loss_coeff=0.5,
-                 entropy_coeff=-0.01,
+                 entropy_coeff=0.01,
                  clip_rho_threshold=1.0,
                  clip_pg_rho_threshold=1.0):
         """Policy gradient loss with vtrace importance weighting.
@@ -94,7 +94,7 @@ class VTraceLoss(object):
             tf.boolean_mask(actions_entropy, valid_mask))
 
         # The summed weighted loss
-        self.total_loss = (self.pi_loss + self.vf_loss * vf_loss_coeff +
+        self.total_loss = (self.pi_loss + self.vf_loss * vf_loss_coeff -
                            self.entropy * entropy_coeff)
 
 
@@ -159,6 +159,7 @@ class VTracePolicyGraph(LearningRateSchedule, TFPolicyGraph):
                 "is_training": self._get_is_training_placeholder(),
             },
             observation_space,
+            action_space,
             logit_dim,
             self.config["model"],
             state_in=existing_state_in,
