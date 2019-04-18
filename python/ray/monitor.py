@@ -7,6 +7,7 @@ import logging
 import os
 import time
 import traceback
+import json
 
 import redis
 
@@ -216,6 +217,16 @@ class Monitor(object):
                         binary_to_hex(driver_id)))
         self._xray_clean_up_entries_for_driver(driver_id)
 
+    def autoscaler_resource_request_handler(self, _, data):
+        if not self.autoscaler:
+            return
+
+        try:
+            self.autoscaler.request_resources(json.loads(data))
+        except Exception:
+            # We don't want this to kill the monitor.
+            traceback.print_exc()
+
     def process_messages(self, max_messages=10000):
         """Process all messages ready in the subscription channels.
 
@@ -245,6 +256,8 @@ class Monitor(object):
                 elif channel == ray.gcs_utils.XRAY_DRIVER_CHANNEL:
                     # Handles driver death.
                     message_handler = self.xray_driver_removed_handler
+                elif channel == ray.ray_constants.AUTOSCALER_RESOURCE_REQUEST_CHANNEL:
+                    message_handler = self.autoscaler_resource_request_handler
                 else:
                     raise Exception("This code should be unreachable.")
 
@@ -301,6 +314,9 @@ class Monitor(object):
         # Initialize the subscription channel.
         self.subscribe(ray.gcs_utils.XRAY_HEARTBEAT_BATCH_CHANNEL)
         self.subscribe(ray.gcs_utils.XRAY_DRIVER_CHANNEL)
+
+        if self.autoscaler:
+            self.subscribe(ray.ray_constants.AUTOSCALER_RESOURCE_REQUEST_CHANNEL)
 
         # TODO(rkn): If there were any dead clients at startup, we should clean
         # up the associated state in the state tables.
