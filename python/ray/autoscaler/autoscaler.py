@@ -10,6 +10,7 @@ import math
 import os
 import subprocess
 import threading
+import traceback
 import time
 from collections import defaultdict
 
@@ -666,6 +667,20 @@ class StandardAutoscaler(object):
 
         logger.info("StandardAutoscaler: resource_requests={}".format(
             self.resource_requests))
+
+    def kill_workers(self):
+        logger.error("StandardAutoscaler: kill_workers triggered")
+
+        while True:
+            try:
+                nodes = self.workers()
+                if nodes:
+                    self.provider.terminate_nodes(nodes)
+                logger.error("StandardAutoscaler: terminated {} node(s)".format(len(nodes)))
+            except Exception:
+                traceback.print_exc()
+
+            time.sleep(10)
 
 
 def typename(v):
