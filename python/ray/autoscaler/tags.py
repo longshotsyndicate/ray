@@ -21,3 +21,6 @@ TAG_RAY_LAUNCH_CONFIG = "ray-launch-config"
 
 # Hash of the node runtime config, used to determine if updates are needed
 TAG_RAY_RUNTIME_CONFIG = "ray-runtime-config"
+
+# Node label; specified e.g. in worker_nodes
+TAG_RAY_NODE_LABEL = "ray-node-label"

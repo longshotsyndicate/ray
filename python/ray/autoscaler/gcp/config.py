@@ -274,6 +274,7 @@ def _configure_subnet(config):
 
     # Rationale: avoid subnet lookup if the network is already
     # completely manually configured
+    # TODO TODO: Fix worker_nodes here for the new format
     if ("networkInterfaces" in config["head_node"]
             and "networkInterfaces" in config["worker_nodes"]):
         return config
@@ -297,6 +298,7 @@ def _configure_subnet(config):
             }],
         }]
 
+    # TODO TODO: Fix worker_nodes here for the new format
     if "networkInterfaces" not in config["worker_nodes"]:
         config["worker_nodes"]["networkInterfaces"] = [{
             "subnetwork": default_subnet["selfLink"],

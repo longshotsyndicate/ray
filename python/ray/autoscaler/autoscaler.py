@@ -22,7 +22,7 @@ from ray.autoscaler.node_provider import get_node_provider, \
     get_default_config
 from ray.autoscaler.tags import (TAG_RAY_LAUNCH_CONFIG, TAG_RAY_RUNTIME_CONFIG,
                                  TAG_RAY_NODE_STATUS, TAG_RAY_NODE_TYPE,
-                                 TAG_RAY_NODE_NAME)
+                                 TAG_RAY_NODE_NAME, TAG_RAY_NODE_LABEL)
 from ray.autoscaler.updater import NodeUpdaterThread
 from ray.ray_constants import AUTOSCALER_MAX_NUM_FAILURES, \
     AUTOSCALER_MAX_LAUNCH_BATCH, AUTOSCALER_MAX_CONCURRENT_LAUNCHES, \
@@ -271,13 +271,22 @@ class NodeLauncher(threading.Thread):
         tag_filters = {TAG_RAY_NODE_TYPE: "worker"}
         before = self.provider.non_terminated_nodes(tag_filters=tag_filters)
         launch_hash = hash_launch_conf(config["worker_nodes"], config["auth"])
+
+        for k, v in config["worker_nodes"].items():
+            worker_node_label = k
+            worker_node_conf = copy.deepcopy(v)
+            del worker_node_conf["Priority"]
+            del worker_node_conf["Resources"]
+
+        print("creating node with config {}".format(worker_node_conf))
         self.provider.create_node(
-            config["worker_nodes"], {
+            worker_node_conf, {
                 TAG_RAY_NODE_NAME: "ray-{}-worker".format(
                     config["cluster_name"]),
                 TAG_RAY_NODE_TYPE: "worker",
                 TAG_RAY_NODE_STATUS: "uninitialized",
                 TAG_RAY_LAUNCH_CONFIG: launch_hash,
+                TAG_RAY_NODE_LABEL: worker_node_label,
             }, count)
         after = self.provider.non_terminated_nodes(tag_filters=tag_filters)
         if set(after).issubset(before):

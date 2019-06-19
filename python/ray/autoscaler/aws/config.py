@@ -113,7 +113,8 @@ def _configure_iam_role(config):
 def _configure_key_pair(config):
     if "ssh_private_key" in config["auth"]:
         assert "KeyName" in config["head_node"]
-        assert "KeyName" in config["worker_nodes"]
+        for k, v in config["worker_nodes"].items():
+            assert "KeyName" in v
         return config
 
     ec2 = _resource("ec2", config)
@@ -152,7 +153,8 @@ def _configure_key_pair(config):
 
     config["auth"]["ssh_private_key"] = key_path
     config["head_node"]["KeyName"] = key_name
-    config["worker_nodes"]["KeyName"] = key_name
+    for k, v in config["worker_nodes"].items():
+        v["KeyName"] = key_name
 
     return config
 
@@ -191,22 +193,25 @@ def _configure_subnet(config):
                     "SubnetIds not specified for head node, using {}".format(
                         subnet_descr))
 
-    if "SubnetIds" not in config["worker_nodes"]:
-        config["worker_nodes"]["SubnetIds"] = subnet_ids
-        logger.info("_configure_subnet: "
-                    "SubnetId not specified for workers,"
-                    " using {}".format(subnet_descr))
+    for k, v in config["worker_nodes"].items():
+        if "SubnetIds" not in v:
+            v["SubnetIds"] = subnet_ids
+            logger.info("_configure_subnet: "
+                        "SubnetId not specified for worker {k},"
+                        " using {}".format(subnet_descr))
 
     return config
 
 
 def _configure_security_group(config):
-    if "SecurityGroupIds" in config["head_node"] and \
-            "SecurityGroupIds" in config["worker_nodes"]:
+    if "SecurityGroupIds" in config["head_node"]:
+        test = config["head_node"]["SecurityGroupIds"]
+        for k, v in config["worker_nodes"].items():
+            assert v["SecurityGroupIds"] == test
         return config  # have user-defined groups
 
     group_name = SECURITY_GROUP_TEMPLATE.format(config["cluster_name"])
-    vpc_id = _get_vpc_id_or_die(config, config["worker_nodes"]["SubnetIds"][0])
+    vpc_id = _get_vpc_id_or_die(config, config["head_node"]["SubnetIds"][0])
     security_group = _get_security_group(config, vpc_id, group_name)
 
     if security_group is None:
@@ -237,19 +242,18 @@ def _configure_security_group(config):
             }]
         }])
 
-    if "SecurityGroupIds" not in config["head_node"]:
-        logger.info(
-            "_configure_security_group: "
-            "SecurityGroupIds not specified for head node, using {}".format(
-                security_group.group_name))
-        config["head_node"]["SecurityGroupIds"] = [security_group.id]
+    logger.info(
+        "_configure_security_group: "
+        "SecurityGroupIds not specified for head node, using {}".format(
+            security_group.group_name))
+    config["head_node"]["SecurityGroupIds"] = [security_group.id]
 
-    if "SecurityGroupIds" not in config["worker_nodes"]:
-        logger.info(
-            "_configure_security_group: "
-            "SecurityGroupIds not specified for workers, using {}".format(
-                security_group.group_name))
-        config["worker_nodes"]["SecurityGroupIds"] = [security_group.id]
+    logger.info(
+        "_configure_security_group: "
+        "SecurityGroupIds not specified for workers, using {}".format(
+            security_group.group_name))
+    for k, v in config["worker_nodes"].items():
+        v["SecurityGroupIds"] = [security_group.id]
 
     return config
 
