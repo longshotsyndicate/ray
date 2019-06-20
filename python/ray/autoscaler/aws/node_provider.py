@@ -10,7 +10,7 @@ import boto3
 from botocore.config import Config
 
 from ray.autoscaler.node_provider import NodeProvider
-from ray.autoscaler.tags import TAG_RAY_CLUSTER_NAME, TAG_RAY_NODE_NAME
+from ray.autoscaler.tags import TAG_RAY_CLUSTER_NAME, TAG_RAY_NODE_NAME, TAG_RAY_NODE_LABEL
 from ray.ray_constants import BOTO_MAX_RETRIES
 from ray.autoscaler.log_timer import LogTimer
 
@@ -97,8 +97,10 @@ class AWSNodeProvider(NodeProvider):
                 return
 
     def non_terminated_nodes(self, tag_filters):
-        # Note that these filters are acceptable because they are set on
-        #       node initialization, and so can never be sitting in the cache.
+        nodes = self.non_terminated_nodes_new(tag_filters)
+        return [ node["id"] for node in nodes ]
+
+    def non_terminated_nodes_new(self, tag_filters):
         tag_filters = to_aws_format(tag_filters)
         filters = [
             {
@@ -118,16 +120,21 @@ class AWSNodeProvider(NodeProvider):
 
         nodes = list(self.ec2.instances.filter(Filters=filters))
         # Populate the tag cache with initial information if necessary
-        for node in nodes:
-            if node.id in self.tag_cache:
-                continue
 
-            self.tag_cache[node.id] = from_aws_format(
-                {x["Key"]: x["Value"]
-                 for x in node.tags})
+        L = []
+        with self.tag_cache_lock:
+            for node in nodes:
+                if node.id not in self.tag_cache:
+                    self.tag_cache[node.id] = from_aws_format(
+                        {x["Key"]: x["Value"] for x in node.tags})
 
-        self.cached_nodes = {node.id: node for node in nodes}
-        return [node.id for node in nodes]
+                L.append({
+                    "id": node.id,
+                    "label": self.tag_cache[node.id][TAG_RAY_NODE_LABEL],
+                })
+
+        self.cached_nodes = { node.id: node for node in nodes }
+        return L
 
     def is_running(self, node_id):
         node = self._get_cached_node(node_id)
@@ -219,22 +226,31 @@ class AWSNodeProvider(NodeProvider):
 
         logger.info(f"NodeProvider: Calling create_instances {count}...")
         L = self.ec2.create_instances(**conf)
-        for x in L:
-            logger.info(f"NodeProvider: created instance {x.instance_id} {x.state['Name']} {x.state_reason['Message']}")
+        with self.tag_cache_lock:
+            for node in L:
+                if node.id not in self.tag_cache:
+                    logger.info("NP: Adding node to tag cache after creation")
+                    self.tag_cache[node.id] = from_aws_format(
+                        {x["Key"]: x["Value"] for x in node.tags})
+                    logger.info(f"NP: tags are {self.tag_cache[node.id]}")
+
+                logger.info(f"NodeProvider: created instance {node.instance_id} {node.state['Name']} {node.state_reason['Message']}")
 
     def terminate_node(self, node_id):
         node = self._get_cached_node(node_id)
         node.terminate()
 
-        self.tag_cache.pop(node_id, None)
-        self.tag_cache_pending.pop(node_id, None)
+        with self.tag_cache_lock:
+            self.tag_cache.pop(node_id, None)
+            self.tag_cache_pending.pop(node_id, None)
 
     def terminate_nodes(self, node_ids):
         self.ec2.meta.client.terminate_instances(InstanceIds=node_ids)
 
-        for node_id in node_ids:
-            self.tag_cache.pop(node_id, None)
-            self.tag_cache_pending.pop(node_id, None)
+        with self.tag_cache_lock:
+            for node_id in node_ids:
+                self.tag_cache.pop(node_id, None)
+                self.tag_cache_pending.pop(node_id, None)
 
     def _get_node(self, node_id):
         """Refresh and get info for this node, updating the cache."""

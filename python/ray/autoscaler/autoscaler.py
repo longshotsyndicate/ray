@@ -200,6 +200,9 @@ class LoadMetrics(object):
     def approx_workers_used(self):
         return self._info()["NumNodesUsed"]
 
+    def approx_resource_usage_dict(self):
+        return self._info()["ResourceUsageRaw"]
+
     def num_workers_connected(self):
         return self._info()["NumNodesConnected"]
 
@@ -246,6 +249,10 @@ class LoadMetrics(object):
                     round(resources_total[rid], 2), rid)
                 for rid in sorted(resources_used)
             ]),
+            "ResourceUsageRaw": {
+                "used": resources_used,
+                "total": resources_total,
+            },
             "NumNodesConnected": len(self.static_resources_by_ip),
             "NumNodesUsed": round(nodes_used, 2),
             "NodeIdleSeconds": "Min={} Mean={} Max={}".format(
@@ -272,13 +279,15 @@ class NodeLauncher(threading.Thread):
         before = self.provider.non_terminated_nodes(tag_filters=tag_filters)
         launch_hash = hash_launch_conf(config["worker_nodes"], config["auth"])
 
+        assert len(config["worker_nodes"]) >= 1, "No worker nodes in config"
         for k, v in config["worker_nodes"].items():
             worker_node_label = k
             worker_node_conf = copy.deepcopy(v)
             del worker_node_conf["Priority"]
             del worker_node_conf["Resources"]
+            break  # Use the first one
 
-        print("creating node with config {}".format(worker_node_conf))
+        logger.info("StandardAutoscaler: creating node of type {} count {}".format(worker_node_label, count))
         self.provider.create_node(
             worker_node_conf, {
                 TAG_RAY_NODE_NAME: "ray-{}-worker".format(
@@ -420,10 +429,13 @@ class StandardAutoscaler(object):
 
         self.last_update_time = now
         num_pending = self.num_launches_pending.value
-        nodes = self.workers()
+        nodes = self.workers_new()
+        logger.info("StandardAutoscaler: nodes={}".format(nodes))
         self.load_metrics.prune_active_ips(
-            [self.provider.internal_ip(node_id) for node_id in nodes])
+            [self.provider.internal_ip(node["id"]) for node in nodes])
         target_workers = self.target_num_workers()
+
+        self.target_resources() # TODO: just logs atm
 
         if len(nodes) >= target_workers:
             if "CPU" in self.resource_requests:
@@ -436,22 +448,22 @@ class StandardAutoscaler(object):
         horizon = now - (60 * self.config["idle_timeout_minutes"])
 
         nodes_to_terminate = []
-        for node_id in nodes:
-            node_ip = self.provider.internal_ip(node_id)
+        for node in nodes:
+            node_ip = self.provider.internal_ip(node["id"])
             if node_ip in last_used and last_used[node_ip] < horizon and \
                     len(nodes) - len(nodes_to_terminate) > target_workers:
                 logger.info("StandardAutoscaler: "
-                            "{}: Terminating idle node".format(node_id))
-                nodes_to_terminate.append(node_id)
-            elif not self.launch_config_ok(node_id):
+                            "{}: Terminating idle node".format(node))
+                nodes_to_terminate.append(node["id"])
+            elif not self.launch_config_ok(node["id"]):
                 logger.info("StandardAutoscaler: "
-                            "{}: Terminating outdated node".format(node_id))
-                nodes_to_terminate.append(node_id)
+                            "{}: Terminating outdated node".format(node))
+                nodes_to_terminate.append(node["id"])
 
         if nodes_to_terminate:
             self.provider.terminate_nodes(nodes_to_terminate)
-            nodes = self.workers()
-            self.log_info_string(nodes, target_workers)
+            nodes = self.workers_new()
+            self.log_info_string([node["id"] for node in nodes], target_workers)
 
         # Terminate nodes if there are too many
         nodes_to_terminate = []
@@ -463,8 +475,8 @@ class StandardAutoscaler(object):
 
         if nodes_to_terminate:
             self.provider.terminate_nodes(nodes_to_terminate)
-            nodes = self.workers()
-            self.log_info_string(nodes, target_workers)
+            nodes = self.workers_new()
+            self.log_info_string([node["id"] for node in nodes], target_workers)
 
         # Launch new nodes if needed
         num_workers = len(nodes) + num_pending
@@ -474,14 +486,15 @@ class StandardAutoscaler(object):
 
             num_launches = min(max_allowed, target_workers - num_workers)
             self.launch_new_node(num_launches)
-            nodes = self.workers()
-            self.log_info_string(nodes, target_workers)
+            nodes = self.workers_new()
+            self.log_info_string([node["id"] for node in nodes], target_workers)
 
         # Process any completed updates
         completed = []
         for node_id, updater in self.updaters.items():
             if not updater.is_alive():
                 completed.append(node_id)
+
         if completed:
             for node_id in completed:
                 if self.updaters[node_id].exitcode == 0:
@@ -489,19 +502,21 @@ class StandardAutoscaler(object):
                 else:
                     self.num_failed_updates[node_id] += 1
                 del self.updaters[node_id]
-            # Mark the node as active to prevent the node recovery logic
-            # immediately trying to restart Ray on the new node.
-            self.load_metrics.mark_active(self.provider.internal_ip(node_id))
-            nodes = self.workers()
-            self.log_info_string(nodes, target_workers)
+
+                # Mark the node as active to prevent the node recovery logic
+                # immediately trying to restart Ray on the new node.
+                self.load_metrics.mark_active(self.provider.internal_ip(node_id))
+
+            nodes = self.workers_new()
+            self.log_info_string([node["id"] for node in nodes], target_workers)
 
         # Update nodes with out-of-date files
         T = [
             threading.Thread(
                 target=self.spawn_updater,
                 args=(node_id, commands),
-            ) for node_id, commands in (self.should_update(node_id)
-                                        for node_id in nodes)
+            ) for node_id, commands in (self.should_update(node["id"])
+                                        for node in nodes)
             if node_id is not None
         ]
         for t in T:
@@ -510,8 +525,9 @@ class StandardAutoscaler(object):
             t.join()
 
         # Attempt to recover unhealthy nodes
-        for node_id in nodes:
-            self.recover_if_needed(node_id, now)
+        for node in nodes:
+            logger.info(f"recover_if_needed: {node}")
+            self.recover_if_needed(node["id"], now)
 
     def reload_config(self, errors_fatal=False):
         try:
@@ -554,6 +570,22 @@ class StandardAutoscaler(object):
 
         return min(self.config["max_workers"],
                    max(self.config["min_workers"], ideal_num_workers))
+
+    def target_resources(self):
+        target_frac = self.config["target_utilization_fraction"]
+
+        rud = self.load_metrics.approx_resource_usage_dict()
+
+        # Only do CPU for now
+        try:
+            cpu_used = rud["used"][b'CPU']
+            cpu_desired = cpu_used / target_frac
+            cpu_total = rud["total"][b'CPU']
+        except KeyError:
+            cpu_used = cpu_desired = cpu_total = 0.0
+
+        logger.info("StandardAutoscaler: cpu_used,desired,total={},{},{}".format(
+            cpu_used, cpu_desired, cpu_total))
 
     def launch_config_ok(self, node_id):
         launch_conf = self.provider.node_tags(node_id).get(
@@ -619,6 +651,7 @@ class StandardAutoscaler(object):
         return (node_id, init_commands)
 
     def spawn_updater(self, node_id, init_commands):
+        logger.info(f"spawn updater: {node_id}, {init_commands}")
         updater = NodeUpdaterThread(
             node_id=node_id,
             provider_config=self.config["provider"],
@@ -653,6 +686,10 @@ class StandardAutoscaler(object):
 
     def workers(self):
         return self.provider.non_terminated_nodes(
+            tag_filters={TAG_RAY_NODE_TYPE: "worker"})
+
+    def workers_new(self):
+        return self.provider.non_terminated_nodes_new(
             tag_filters={TAG_RAY_NODE_TYPE: "worker"})
 
     def log_info_string(self, nodes, target):
