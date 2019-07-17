@@ -197,6 +197,25 @@ class LoadMetrics(object):
         prune(self.dynamic_resources_by_ip)
         prune(self.last_heartbeat_time_by_ip)
 
+    def local_resources(self):
+        try:
+            total = self.static_resources_by_ip[self.local_ip]
+            avail = self.dynamic_resources_by_ip[self.local_ip]
+        except:
+            total = {}
+            avail = {}
+
+        used = {}
+        for rid, total in static.items():
+            try:
+                used[rid] = total - dynamic[rid]
+            except Exception:
+                v = 0
+                used = 0
+                used[rid] = total - dynamic[rid]
+
+        return { "total_local": total, "used_local": used }
+
     def approx_workers_used(self):
         return self._info()["NumNodesUsed"]
 
@@ -214,6 +233,9 @@ class LoadMetrics(object):
         nodes_used = 0.0
         resources_used = {}
         resources_total = {}
+        resources_used_local = {}
+        resources_total_local = {}
+
         now = time.time()
         for ip, max_resources in self.static_resources_by_ip.items():
             avail_resources = self.dynamic_resources_by_ip[ip]
@@ -226,6 +248,11 @@ class LoadMetrics(object):
                 resources_used[resource_id] += used
                 resources_total[resource_id] += amount
                 used = max(0, used)
+
+                if ip == self.local_ip:
+                    resources_used_local[resource_id] = used
+                    resources_total_local[resource_id] = amount
+
                 if amount > 0:
                     frac = used / float(amount)
                     if frac > max_frac:
@@ -242,6 +269,9 @@ class LoadMetrics(object):
             ip: (now - t)
             for ip, t in most_delayed_heartbeats
         }
+
+        x = self.local_resources()
+
         return {
             "ResourceUsage": ", ".join([
                 "{}/{} {}".format(
@@ -250,8 +280,10 @@ class LoadMetrics(object):
                 for rid in sorted(resources_used)
             ]),
             "ResourceUsageRaw": {
-                "used": resources_used,
-                "total": resources_total,
+                "used": {k.decode(): v for k, v in resources_used.items()},
+                "total": {k.decode(): v for k, v in resources_total.items()},
+                "used_local": {k.decode(): v for k, v in resources_used_local.items()},
+                "total_local": {k.decode(): v for k, v in resources_total_local.items()},
             },
             "NumNodesConnected": len(self.static_resources_by_ip),
             "NumNodesUsed": round(nodes_used, 2),
@@ -435,7 +467,9 @@ class StandardAutoscaler(object):
             [self.provider.internal_ip(node["id"]) for node in nodes])
         target_workers = self.target_num_workers()
 
-        self.target_resources() # TODO: just logs atm
+        target_resources = self.target_resources()
+        logger.info("StandardAutoscaler: target_resources={}".format(
+            target_resources))
 
         if len(nodes) >= target_workers:
             if "CPU" in self.resource_requests:
@@ -574,18 +608,30 @@ class StandardAutoscaler(object):
     def target_resources(self):
         target_frac = self.config["target_utilization_fraction"]
 
-        rud = self.load_metrics.approx_resource_usage_dict()
+        D = self.load_metrics.approx_resource_usage_dict()
 
-        # Only do CPU for now
-        try:
-            cpu_used = rud["used"][b'CPU']
-            cpu_desired = cpu_used / target_frac
-            cpu_total = rud["total"][b'CPU']
-        except KeyError:
-            cpu_used = cpu_desired = cpu_total = 0.0
+        desired_D ={}
+        delta_D = {}
+        for rid, total in D["total"].items():
+            used = D["used"].get(rid, 0.0)
+            desired = used / target_frac
+            requested = self.resource_requests.get(rid, 0.0)
 
-        logger.info("StandardAutoscaler: cpu_used,desired,total={},{},{}".format(
-            cpu_used, cpu_desired, cpu_total))
+            desired = max(desired, requested)
+            desired_D[rid] = desired
+
+            total_local = D["total_local"].get(rid, 0.0)
+            delta = desired - (total - total_local)
+            delta_D[rid] = delta
+
+            logger.info("StandardAutoscaler (target_resources): {} {}/{} desired={} requsted={} delta={}".format(
+                rid, used, total, desired, requested, delta))
+
+        return {
+            "total": D["total"],
+            "desired": desired_D,
+            "delta": delta_D,
+        }
 
     def launch_config_ok(self, node_id):
         launch_conf = self.provider.node_tags(node_id).get(
@@ -684,10 +730,6 @@ class StandardAutoscaler(object):
         config = copy.deepcopy(self.config)
         self.launch_queue.put((config, count))
 
-    def workers(self):
-        return self.provider.non_terminated_nodes(
-            tag_filters={TAG_RAY_NODE_TYPE: "worker"})
-
     def workers_new(self):
         return self.provider.non_terminated_nodes_new(
             tag_filters={TAG_RAY_NODE_TYPE: "worker"})
@@ -721,9 +763,9 @@ class StandardAutoscaler(object):
 
         while True:
             try:
-                nodes = self.workers()
+                nodes = self.workers_new()
                 if nodes:
-                    self.provider.terminate_nodes(nodes)
+                    self.provider.terminate_nodes([node["id"] for node in nodes])
                 logger.error("StandardAutoscaler: terminated {} node(s)".format(len(nodes)))
             except Exception:
                 traceback.print_exc()

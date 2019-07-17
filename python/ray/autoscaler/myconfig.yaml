@@ -1,0 +1,94 @@
+cluster_name: daniel-test
+auth:
+    ssh_private_key: ~/.ssh/model-backtester-worker/id_ed25519
+    ssh_user: ubuntu
+file_mounts: {
+    "/tmp/ray-d5b863f0d135995fddd4a669f2a306c7c8382d49-py3-none-any.whl": "/tmp/mbtf/wheels/ray-d5b863f0d135995fddd4a669f2a306c7c8382d49-py3-none-any.whl",
+    "/tmp/autoscaler.py": "/home/daniel/mbtf/longshotsyndicate/ray/python/ray/autoscaler/autoscaler.py",
+    "/tmp/commands.py": "/home/daniel/mbtf/longshotsyndicate/ray/python/ray/autoscaler/commands.py",
+    "/tmp/aws/node_provider.py": "/home/daniel/mbtf/longshotsyndicate/ray/python/ray/autoscaler/aws/node_provider.py",
+}
+head_node:
+    BlockDeviceMappings:
+        -
+            DeviceName: /dev/sda1
+            Ebs:
+                DeleteOnTermination: true
+                VolumeSize: 30
+                VolumeType: gp2
+    IamInstanceProfile:
+        Arn: arn:aws:iam::208507950353:instance-profile/model-backtest-worker-role
+    KeyName: model-backtester-worker
+    SecurityGroupIds:
+        - sg-5705a42c
+    SubnetIds:
+        - subnet-1c4b6955
+    ImageId: ami-01a514c67a202e037
+    InstanceType: m5.large
+provider:
+    availability_zone: eu-west-1c
+    region: eu-west-1
+    type: aws
+    use_internal_ips: true
+target_utilization_fraction: 0.8
+worker_nodes:
+    c5.large:
+        Priority: 0
+        Resources:
+            CPU: 2
+        InstanceType: c5.large
+        BlockDeviceMappings:
+            -
+                DeviceName: /dev/sda1
+                Ebs:
+                    DeleteOnTermination: true
+                    VolumeSize: 30
+                    VolumeType: gp2
+        IamInstanceProfile:
+            Arn: arn:aws:iam::208507950353:instance-profile/model-backtest-worker-role
+        InstanceMarketOptions:
+            MarketType: spot
+        KeyName: model-backtester-worker
+        SecurityGroupIds:
+            - sg-5705a42c
+        SubnetIds:
+            - subnet-1c4b6955
+        ImageId: ami-01a514c67a202e037
+    c5.xlarge:
+        Priority: 1
+        Resources:
+            CPU: 4
+        InstanceType: c5.xlarge
+        BlockDeviceMappings:
+            -
+                DeviceName: /dev/sda1
+                Ebs:
+                    DeleteOnTermination: true
+                    VolumeSize: 30
+                    VolumeType: gp2
+        IamInstanceProfile:
+            Arn: arn:aws:iam::208507950353:instance-profile/model-backtest-worker-role
+        InstanceMarketOptions:
+            MarketType: spot
+        KeyName: model-backtester-worker
+        SecurityGroupIds:
+            - sg-5705a42c
+        SubnetIds:
+            - subnet-1c4b6955
+        ImageId: ami-01a514c67a202e037
+setup_commands:
+    - pip install /tmp/ray-d5b863f0d135995fddd4a669f2a306c7c8382d49-py3-none-any.whl
+    - cp -a /tmp/autoscaler.py /home/ubuntu/conda/envs/venv/lib/python3.7/site-packages/ray/autoscaler/autoscaler.py
+    - cp -a /tmp/commands.py /home/ubuntu/conda/envs/venv/lib/python3.7/site-packages/ray/autoscaler/commands.py
+    - cp -a /tmp/aws/node_provider.py /home/ubuntu/conda/envs/venv/lib/python3.7/site-packages/ray/autoscaler/aws/node_provider.py
+head_setup_commands: []  # Not required for testing
+worker_setup_commands: []  # Not required for testing
+head_start_ray_commands:
+    - ray stop
+    - ulimit -n 65536; ray start --head --redis-port=6379 --object-manager-port=8076 --autoscaling-config=~/ray_bootstrap_config.yaml --num-cpus=1 --include-webui
+worker_start_ray_commands:
+    - ray stop
+    - ulimit -n 65536; ray start --redis-address=$RAY_HEAD_IP:6379 --object-manager-port=8076
+min_workers: 1
+max_workers: 5
+idle_timeout_minutes: 3
