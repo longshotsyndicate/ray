@@ -197,6 +197,8 @@ def get_initial_state(config):
     return {
         "last_target_update_ts": 0,
         "num_target_updates": 0,
+        "last_network_save_ts": 0,
+
     }
 
 
@@ -232,10 +234,12 @@ def setup_exploration(trainer):
 def update_worker_explorations(trainer):
     global_timestep = trainer.optimizer.num_steps_sampled
     exp_vals = [trainer.exploration0.value(global_timestep)]
+    #print("WORKER: Local Worker, EXPLORATION",exp_vals)
     trainer.workers.local_worker().foreach_trainable_policy(
         lambda p, _: p.set_epsilon(exp_vals[0]))
     for i, e in enumerate(trainer.workers.remote_workers()):
         exp_val = trainer.explorations[i].value(global_timestep)
+     #   print("WORKER:",i,"EXPLORATION VALUE:", exp_val)
         e.foreach_trainable_policy.remote(lambda p, _: p.set_epsilon(exp_val))
         exp_vals.append(exp_val)
     trainer.train_start_timestep = global_timestep

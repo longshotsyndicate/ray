@@ -72,6 +72,18 @@ def update_target_based_on_num_steps_trained(trainer, fetches):
         trainer.state["last_target_update_ts"] = (
             trainer.optimizer.num_steps_trained)
         trainer.state["num_target_updates"] += 1
+        #import pdb
+        #pdb.set_trace()
+        #print("get trainer.workers.local_worker() stuff")
+        #  save the weights in here!
+    if (trainer.optimizer.num_steps_trained -
+           trainer.state["last_network_save_ts"] >
+            trainer.config["network_save_freq"]):
+        weights_to_save = trainer.workers.local_worker().policy_map['default_policy'].export_checkpoint('/home/william/ray_results/')
+        trainer.state["last_network_save_ts"] = (trainer.optimizer.num_steps_trained)
+         # This will use properties in the dict that are set in the dqn class - so check there for changes regarding trainer.state etc.
+
+
 
 
 APEX_TRAINER_PROPERTIES = {

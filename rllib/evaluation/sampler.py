@@ -39,12 +39,13 @@ class PerfStats(object):
         self.env_wait_time = 0.0
         self.processing_time = 0.0
         self.inference_time = 0.0
-
+        self.infos = 0.0  # wg addition
     def get(self):
         return {
             "mean_env_wait_ms": self.env_wait_time * 1000 / self.iters,
             "mean_processing_ms": self.processing_time * 1000 / self.iters,
-            "mean_inference_ms": self.inference_time * 1000 / self.iters
+            "mean_inference_ms": self.inference_time * 1000 / self.iters,
+            "infos": self.infos  # wg addition
         }
 
 
@@ -326,6 +327,11 @@ def _env_runner(base_env, extra_batch_callback, policies, policy_mapping_fn,
         eval_results = _do_policy_eval(tf_sess, to_eval, policies,
                                        active_episodes)
         perf_stats.inference_time += time.time() - t2
+        if infos[0]['agent0'] is not None:
+            perf_stats.infos = infos[0]['agent0']['reward_info']
+        #if perf_stats.iters > 100:
+            #import pdb
+            #pdb.set_trace()
 
         # Process results and update episode state
         t3 = time.time()

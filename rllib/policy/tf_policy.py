@@ -255,6 +255,10 @@ class TFPolicy(Policy):
     def get_weights(self):
         return self._variables.get_flat()
 
+    #@override(Policy)
+    def get_clean_weights(self):
+        return self._variables.values()
+
     @override(Policy)
     def set_weights(self, weights):
         return self._variables.set_flat(weights)
@@ -279,7 +283,9 @@ class TFPolicy(Policy):
             # ignore error if export dir already exists
             if e.errno != errno.EEXIST:
                 raise
+
         save_path = os.path.join(export_dir, filename_prefix)
+
         with self._sess.graph.as_default():
             saver = tf.train.Saver()
             saver.save(self._sess, save_path)
