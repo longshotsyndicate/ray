@@ -9,6 +9,7 @@ let dashboard = new Vue({
         totals: undefined,
         tasks: undefined,
         ray_config: undefined,
+        autoscaler_status: undefined,
     },
     methods: {
         updateNodeInfo: function() {
@@ -53,9 +54,27 @@ let dashboard = new Vue({
                 setTimeout(self.updateRayConfig, 10000);
             });
         },
+        updateAutoscalerStatus: function() {
+            var self = this;
+            fetch("/api/autoscaler_status").then(function (resp) {
+                return resp.json();
+            }).then(function(data) {
+                if (data.error) {
+                    self.autoscaler_status = undefined;
+                    return;
+                }
+                self.autoscaler_status = data.result;
+            }).catch(function() {
+                self.error = "request error"
+                self.autoscaler_status = undefined;
+            }).finally(function() {
+                setTimeout(self.updateAutoscalerStatus, 1000);
+            });
+        },
         updateAll: function() {
             this.updateNodeInfo();
             this.updateRayConfig();
+            this.updateAutoscalerStatus();
         },
         tickClock: function() {
             this.now = (new Date()).getTime() / 1000;

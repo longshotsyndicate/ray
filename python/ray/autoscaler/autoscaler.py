@@ -16,6 +16,7 @@ from collections import defaultdict
 import numpy as np
 import ray.services as services
 import yaml
+from ray.services import create_redis_client
 from ray.worker import global_worker
 from ray.autoscaler.docker import dockerize_if_needed
 from ray.autoscaler.node_provider import get_node_provider, \
@@ -27,7 +28,8 @@ from ray.autoscaler.updater import NodeUpdaterThread
 from ray.ray_constants import AUTOSCALER_MAX_NUM_FAILURES, \
     AUTOSCALER_MAX_LAUNCH_BATCH, AUTOSCALER_MAX_CONCURRENT_LAUNCHES, \
     AUTOSCALER_UPDATE_INTERVAL_S, AUTOSCALER_HEARTBEAT_TIMEOUT_S, \
-    AUTOSCALER_RESOURCE_REQUEST_CHANNEL, MEMORY_RESOURCE_UNIT_BYTES
+    AUTOSCALER_RESOURCE_REQUEST_CHANNEL, MEMORY_RESOURCE_UNIT_BYTES, \
+    AUTOSCALER_STATUS_CHANNEL
 from six import string_types
 from six.moves import queue
 
@@ -389,7 +391,9 @@ class StandardAutoscaler(object):
                  max_concurrent_launches=AUTOSCALER_MAX_CONCURRENT_LAUNCHES,
                  max_failures=AUTOSCALER_MAX_NUM_FAILURES,
                  process_runner=subprocess,
-                 update_interval_s=AUTOSCALER_UPDATE_INTERVAL_S):
+                 update_interval_s=AUTOSCALER_UPDATE_INTERVAL_S,
+                 redis_address=None,
+                 redis_password=None):
         self.config_path = config_path
         self.reload_config(errors_fatal=True)
         self.load_metrics = load_metrics
@@ -400,6 +404,10 @@ class StandardAutoscaler(object):
         self.max_launch_batch = max_launch_batch
         self.max_concurrent_launches = max_concurrent_launches
         self.process_runner = process_runner
+        self.redis_address = redis_address
+        self.redis_password = redis_password
+        self.redis_client = create_redis_client(self.redis_address, password=self.redis_password)
+        self.redis_key = AUTOSCALER_STATUS_CHANNEL
 
         # Map from node_id to NodeUpdater processes
         self.updaters = {}
@@ -558,6 +566,8 @@ class StandardAutoscaler(object):
         # Attempt to recover unhealthy nodes
         for node_id in nodes:
             self.recover_if_needed(node_id, now)
+
+        self.publish_autoscaler_status(nodes, target_workers)
 
     def reload_config(self, errors_fatal=False):
         try:
@@ -729,6 +739,10 @@ class StandardAutoscaler(object):
             suffix += " (bringup=True)"
 
         return "{}/{} target nodes{}".format(len(nodes), target, suffix)
+
+    def publish_autoscaler_status(self, nodes, target):
+        autoscaler_status = {"StandardAutoscaler": self.info_string(nodes, target)}
+        self.redis_client.publish(self.redis_key, json.dumps(autoscaler_status))
 
     def request_resources(self, resources):
         for resource, count in resources.items():

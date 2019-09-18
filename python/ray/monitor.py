@@ -51,7 +51,9 @@ class Monitor(object):
         self.load_metrics = LoadMetrics()
         if autoscaling_config:
             self.autoscaler = StandardAutoscaler(autoscaling_config,
-                                                 self.load_metrics)
+                                                 self.load_metrics,
+                                                 redis_address=redis_address,
+                                                 redis_password=redis_password)
         else:
             self.autoscaler = None
 

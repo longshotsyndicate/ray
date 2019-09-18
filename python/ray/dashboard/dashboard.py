@@ -59,6 +59,7 @@ class Dashboard(object):
         self.token = token
         self.temp_dir = temp_dir
         self.node_stats = NodeStats(redis_address, redis_password)
+        self.autoscaler_stats = AutoscalerStats(redis_address, redis_password)
 
         self.app = aiohttp.web.Application(middlewares=[self.auth_middleware])
         self.setup_routes()
@@ -162,12 +163,21 @@ class Dashboard(object):
             D = self.node_stats.get_node_stats()
             return await json_response(result=D, ts=now)
 
+        async def autoscaler_status(_) -> aiohttp.web.Response:
+            now = datetime.datetime.utcnow()
+            D = self.autoscaler_stats.get_autoscaler_stats()
+            if D:
+                return await json_response(result=D, ts=now)
+            else:
+                return await json_response(error="No autoscaler")
+
         self.app.router.add_get("/", get_index)
         self.app.router.add_get("/index.html", get_index)
         self.app.router.add_get("/index.htm", get_index)
         self.app.router.add_get("/res/{x}", get_resource)
 
         self.app.router.add_get("/api/node_info", node_info)
+        self.app.router.add_get("/api/autoscaler_status", autoscaler_status)
         self.app.router.add_get("/api/super_client_table", node_info)
         self.app.router.add_get("/api/ray_config", ray_config)
 
@@ -182,7 +192,36 @@ class Dashboard(object):
     def run(self):
         self.log_dashboard_url()
         self.node_stats.start()
+        self.autoscaler_stats.start()
         aiohttp.web.run_app(self.app, host="0.0.0.0", port=self.port)
+
+
+class AutoscalerStats(threading.Thread):
+
+    def __init__(self, redis_address, redis_password=None):
+        self.redis_key = ray.ray_constants.AUTOSCALER_STATUS_CHANNEL
+        self.redis_client = ray.services.create_redis_client(redis_address, password=redis_password)
+        self._autoscaler_stats = {}
+        self._autoscaler_stats_lock = threading.Lock()
+        super().__init__()
+
+    def run(self):
+        p = self.redis_client.pubsub(ignore_subscribe_messages=True)
+        p.psubscribe(self.redis_key)
+        logger.info("AutoscalerStats: subscribed to {}".format(self.redis_key))
+
+        for x in p.listen():
+            try:
+                D = json.loads(ray.utils.decode(x["data"]))
+                with self._autoscaler_stats_lock:
+                    self._autoscaler_stats = D["StandardAutoscaler"]
+            except Exception:
+                logger.exception(traceback.format_exc())
+                continue
+
+    def get_autoscaler_stats(self) -> Dict:
+        with self._autoscaler_stats_lock:
+            return self._autoscaler_stats
 
 
 class NodeStats(threading.Thread):
