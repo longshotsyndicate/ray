@@ -612,7 +612,7 @@ class StandardAutoscaler(object):
             except KeyError:
                 cores_per_worker = 1  # Assume the worst
 
-            cores_desired = self.resource_requests["CPU"]
+            cores_desired = self.resource_requests.pop("CPU")
 
             ideal_num_workers = max(
                 ideal_num_workers,
