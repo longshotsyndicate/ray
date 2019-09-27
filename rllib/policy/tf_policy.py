@@ -253,11 +253,17 @@ class TFPolicy(Policy):
 
     @override(Policy)
     def get_weights(self):
+        #pdb.set_trace()
         return self._variables.get_flat()
 
-    #@override(Policy)
+    # @override(Policy)
     def get_clean_weights(self):
-        return self._variables.values()
+        #import pdb; pdb.set_trace()
+        this_session = self.get_session()
+        print("get self.variables.values()")
+        return [v.eval(session=this_session)
+                for v in self.variables.values()]
+        # return self._variables.values()
 
     @override(Policy)
     def set_weights(self, weights):

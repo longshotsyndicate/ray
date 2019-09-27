@@ -503,7 +503,7 @@ class ModelCatalog(object):
                 options,
                 state_in=state_in,
                 seq_lens=seq_lens)
-
+        #import pdb; pdb.set_trace()
         obs_rank = len(input_dict["obs"].shape) - 1
 
         if obs_rank > 1:

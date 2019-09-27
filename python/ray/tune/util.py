@@ -11,7 +11,7 @@ from threading import Thread
 
 import numpy as np
 import ray
-
+import pdb
 logger = logging.getLogger(__name__)
 
 try:
@@ -154,6 +154,8 @@ def deep_update(original, new_dict, new_keys_allowed, whitelist):
             where new subkeys can be introduced. This is only at
             the top level.
     """
+    #if 'network_save_freq' not in whitelist:
+    #    pdb.set_trace()
     for k, value in new_dict.items():
         if k not in original:
             if not new_keys_allowed:

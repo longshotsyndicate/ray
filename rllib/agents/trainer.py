@@ -315,10 +315,10 @@ class Trainer(Trainable):
         logdir (str): Directory in which training outputs should be placed.
     """
 
-    _allow_unknown_configs = False
+    _allow_unknown_configs = True
     _allow_unknown_subkeys = [
         "tf_session_args", "env_config", "model", "optimizer", "multiagent",
-        "custom_resources_per_worker", "evaluation_config"
+        "custom_resources_per_worker", "evaluation_config", "network_save_freq", "saving_starts"  # wg addition: had to add my own
     ]
 
     @PublicAPI

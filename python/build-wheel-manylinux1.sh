@@ -18,6 +18,9 @@ NUMPY_VERSIONS=("1.14.5"
                 "1.14.5"
                 "1.14.5")
 
+PYTHONS=("cp37-cp37m")
+NUMPY_VERSIONS=("1.14.5")
+
 sudo apt-get install unzip
 /ray/ci/travis/install-bazel.sh
 

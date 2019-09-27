@@ -1,10 +1,11 @@
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
-
+import numpy as np
 from ray.rllib.agents.dqn.dqn import DQNTrainer, DEFAULT_CONFIG as DQN_CONFIG
 from ray.rllib.optimizers import AsyncReplayOptimizer
 from ray.rllib.utils import merge_dicts
+from ray.tune.result import DEFAULT_RESULTS_DIR
 
 # yapf: disable
 # __sphinx_doc_begin__
@@ -78,10 +79,17 @@ def update_target_based_on_num_steps_trained(trainer, fetches):
         #  save the weights in here!
     if (trainer.optimizer.num_steps_trained -
            trainer.state["last_network_save_ts"] >
-            trainer.config["network_save_freq"]):
-        weights_to_save = trainer.workers.local_worker().policy_map['default_policy'].export_checkpoint('/home/william/ray_results/')
+            trainer.config["network_save_freq"]) and (trainer.optimizer.num_steps_trained > trainer.config["saving_starts"]):
+        #net_save = trainer.workers.local_worker().policy_map['default_policy'].export_checkpoint('/home/william/ray_results/')
+
+        #weights_to_save = trainer.workers.local_worker().policy_map['default_policy'].get_clean_weights()  # this will be used when we are building our own net to run the RLstrategy
+        # np.save('/home/ubuntu/ray_results/net_weights' + str(trainer.state["last_network_save_ts"]) + '.npy', weights_to_save)
+
+        flat_weights_to_save = trainer.workers.local_worker().policy_map['default_policy'].get_weights()
+        np.save(DEFAULT_RESULTS_DIR + '/flat_net_weights.npy', flat_weights_to_save)  # need to see if I can find a way to get the right folder here.
+
         trainer.state["last_network_save_ts"] = (trainer.optimizer.num_steps_trained)
-         # This will use properties in the dict that are set in the dqn class - so check there for changes regarding trainer.state etc.
+        # This will use properties in the dict that are set in the dqn class - so check there for changes regarding trainer.state etc.
 
 
 
