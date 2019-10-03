@@ -574,14 +574,17 @@ class StandardAutoscaler(object):
             with open(self.config_path) as f:
                 new_config = yaml.safe_load(f.read())
             validate_config(new_config)
-            new_launch_hash = hash_launch_conf(new_config["worker_nodes"],
-                                               new_config["auth"])
+            #new_launch_hash = hash_launch_conf(new_config["worker_nodes"],
+            #                                   new_config["auth"])
+            new_launch_hashes = {hash_launch_conf(worker_config, new_config["auth"]): worker_name
+                                 for worker_name, worker_config in new_config["worker_nodes"]}
             new_runtime_hash = hash_runtime_conf(new_config["file_mounts"], [
                 new_config["worker_setup_commands"],
                 new_config["worker_start_ray_commands"]
             ])
             self.config = new_config
-            self.launch_hash = new_launch_hash
+            #self.launch_hash = new_launch_hash
+            self.launch_hashes = self.launch_hash
             self.runtime_hash = new_runtime_hash
         except Exception as e:
             if errors_fatal:
@@ -607,12 +610,15 @@ class StandardAutoscaler(object):
         # Other resources are not supported at present.
         if "CPU" in self.resource_requests:
             try:
-                cores_per_worker = self.config["worker_nodes"]["Resources"][
-                    "CPU"]
+                # TODO optimization problem (integer linear programming, probably)
+                # TODO for now, just get the (lexicographically) first one
+                #cores_per_worker = self.config["worker_nodes"]["Resources"]["CPU"]
+                cores_per_worker = self.config["worker_nodes"][sorted(self.config("worker_nodes"))[0]]
             except KeyError:
                 cores_per_worker = 1  # Assume the worst
 
-            cores_desired = self.resource_requests.pop("CPU")
+            #cores_desired = self.resource_requests.pop("CPU")
+            cores_desired = self.resource_requests["CPU"]
 
             ideal_num_workers = max(
                 ideal_num_workers,
@@ -624,7 +630,8 @@ class StandardAutoscaler(object):
     def launch_config_ok(self, node_id):
         launch_conf = self.provider.node_tags(node_id).get(
             TAG_RAY_LAUNCH_CONFIG)
-        if self.launch_hash != launch_conf:
+        #if self.launch_hash != launch_conf:
+        if launch_conf not in self.launch_hashes:
             return False
         return True
 
