@@ -31,7 +31,7 @@ for ((i=0; i<${#PYTHONS[@]}; ++i)); do
   # The -f flag is passed twice to also run git clean in the arrow subdirectory.
   # The -d flag removes directories. The -x flag ignores the .gitignore file,
   # and the -e flag ensures that we don't remove the .whl directory.
-  #git clean -f -f -x -d -e .whl
+  git clean -f -f -x -d -e .whl
   pushd python
     # Fix the numpy version because this will be the oldest numpy version we can
     # support.
