@@ -50,6 +50,7 @@ div.cols {
     margin: 1rem 0;
     display: grid;
     grid-template-columns: 1fr 1fr;
+    font-size: 1.4rem;
 }
 div.cols div {
     padding: 1rem 0;
