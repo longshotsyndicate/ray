@@ -113,7 +113,8 @@ def _configure_iam_role(config):
 def _configure_key_pair(config):
     if "ssh_private_key" in config["auth"]:
         assert "KeyName" in config["head_node"]
-        assert "KeyName" in config["worker_nodes"]
+        for _, worker in config["worker_nodes"].items():
+            assert "KeyName" in worker
         return config
 
     ec2 = _resource("ec2", config)
@@ -152,7 +153,8 @@ def _configure_key_pair(config):
 
     config["auth"]["ssh_private_key"] = key_path
     config["head_node"]["KeyName"] = key_name
-    config["worker_nodes"]["KeyName"] = key_name
+    for _, worker in config["worker_nodes"].items():
+        worker["KeyName"] = key_name
 
     return config
 
@@ -191,34 +193,36 @@ def _configure_subnet(config):
                     "SubnetIds not specified for head node, using {}".format(
                         subnet_descr))
 
-    if "SubnetIds" not in config["worker_nodes"]:
-        config["worker_nodes"]["SubnetIds"] = subnet_ids
-        logger.info("_configure_subnet: "
-                    "SubnetId not specified for workers,"
-                    " using {}".format(subnet_descr))
+    for _, worker in config["worker_nodes"].items():
+        if "SubnetIds" not in worker:
+            worker["SubnetIds"] = subnet_ids
+            logger.info("_configure_subnet: "
+                        "SubnetId not specified for workers,"
+                        " using {}".format(subnet_descr))
 
     return config
 
 
 def _configure_security_group(config):
     if "SecurityGroupIds" in config["head_node"] and \
-            "SecurityGroupIds" in config["worker_nodes"]:
+            all("SecurityGroupIds" in worker for _, worker in config["worker_nodes"].items()):
         return config  # have user-defined groups
 
     group_name = SECURITY_GROUP_TEMPLATE.format(config["cluster_name"])
-    vpc_id = _get_vpc_id_or_die(config, config["worker_nodes"]["SubnetIds"][0])
-    security_group = _get_security_group(config, vpc_id, group_name)
-
-    if security_group is None:
-        logger.info("_configure_security_group: "
-                    "Creating new security group {}".format(group_name))
-        client = _client("ec2", config)
-        client.create_security_group(
-            Description="Auto-created security group for Ray workers",
-            GroupName=group_name,
-            VpcId=vpc_id)
+    for _, worker in config["worker_nodes"].items():
+        vpc_id = _get_vpc_id_or_die(config, worker["SubnetIds"][0])
         security_group = _get_security_group(config, vpc_id, group_name)
-        assert security_group, "Failed to create security group"
+
+        if security_group is None:
+            logger.info("_configure_security_group: "
+                        "Creating new security group {}".format(group_name))
+            client = _client("ec2", config)
+            client.create_security_group(
+                Description="Auto-created security group for Ray workers",
+                GroupName=group_name,
+                VpcId=vpc_id)
+            security_group = _get_security_group(config, vpc_id, group_name)
+            assert security_group, "Failed to create security group"
 
     if not security_group.ip_permissions:
         security_group.authorize_ingress(IpPermissions=[{
@@ -244,12 +248,13 @@ def _configure_security_group(config):
                 security_group.group_name))
         config["head_node"]["SecurityGroupIds"] = [security_group.id]
 
-    if "SecurityGroupIds" not in config["worker_nodes"]:
-        logger.info(
-            "_configure_security_group: "
-            "SecurityGroupIds not specified for workers, using {}".format(
-                security_group.group_name))
-        config["worker_nodes"]["SecurityGroupIds"] = [security_group.id]
+    for _, worker in config["worker_nodes"].items():
+        if "SecurityGroupIds" not in worker:
+            logger.info(
+                "_configure_security_group: "
+                "SecurityGroupIds not specified for workers, using {}".format(
+                    security_group.group_name))
+            worker["SecurityGroupIds"] = [security_group.id]
 
     return config
 

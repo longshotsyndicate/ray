@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 def create_or_update_cluster(config_file, override_min_workers,
                              override_max_workers, no_restart, restart_only,
                              yes, override_cluster_name):
+
+    import ipdb
+    ipdb.set_trace()
+
     """Create or updates an autoscaling Ray cluster from a config json."""
     config = yaml.safe_load(open(config_file).read())
     if override_min_workers is not None:
@@ -169,6 +173,10 @@ def monitor_cluster(cluster_config_file, num_lines, override_cluster_name):
 def get_or_create_head_node(config, config_file, no_restart, restart_only, yes,
                             override_cluster_name):
     """Create the cluster head node, which in turn creates the workers."""
+
+    import ipdb
+    ipdb.set_trace()
+
     provider = get_node_provider(config["provider"], config["cluster_name"])
     try:
         head_node_tags = {
