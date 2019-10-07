@@ -473,7 +473,7 @@ class StandardAutoscaler(object):
         nodes = self.workers()
         self.load_metrics.prune_active_ips(
             [self.provider.internal_ip(node_id) for node_id in nodes])
-        target_workers = self.target_num_workers()
+        target_workers, worker_name = self.target_num_workers()
 
         if len(nodes) >= target_workers:
             if "CPU" in self.resource_requests:
@@ -523,7 +523,7 @@ class StandardAutoscaler(object):
                               self.max_concurrent_launches - num_pending)
 
             num_launches = min(max_allowed, target_workers - num_workers)
-            self.launch_new_node(num_launches)
+            self.launch_new_node(num_launches, worker_name)
             nodes = self.workers()
             self.log_info_string(nodes, target_workers)
         elif self.load_metrics.num_workers_connected() >= target_workers:
@@ -594,6 +594,11 @@ class StandardAutoscaler(object):
                                  "Error parsing config.")
 
     def target_num_workers(self):
+
+        # TODO optimization problem (integer linear programming, probably)
+        # TODO for now, just get the (lexicographically) first one
+        worker_name = sorted(self.config["worker_nodes"])[0]
+
         target_frac = self.config["target_utilization_fraction"]
         cur_used = self.load_metrics.approx_workers_used()
         ideal_num_nodes = int(np.ceil(cur_used / float(target_frac)))
@@ -610,10 +615,8 @@ class StandardAutoscaler(object):
         # Other resources are not supported at present.
         if "CPU" in self.resource_requests:
             try:
-                # TODO optimization problem (integer linear programming, probably)
-                # TODO for now, just get the (lexicographically) first one
                 #cores_per_worker = self.config["worker_nodes"]["Resources"]["CPU"]
-                cores_per_worker = self.config["worker_nodes"][sorted(self.config["worker_nodes"])[0]]["Resources"]["CPU"]
+                cores_per_worker = self.config["worker_nodes"][worker_name]["Resources"]["CPU"]
             except KeyError:
                 cores_per_worker = 1  # Assume the worst
 
@@ -625,7 +628,7 @@ class StandardAutoscaler(object):
                 int(np.ceil(cores_desired / cores_per_worker)))
 
         return min(self.config["max_workers"],
-                   max(self.config["min_workers"], ideal_num_workers))
+                   max(self.config["min_workers"], ideal_num_workers)), worker_name
 
     def launch_config_ok(self, node_id):
         launch_conf = self.provider.node_tags(node_id).get(
@@ -717,11 +720,15 @@ class StandardAutoscaler(object):
             return False
         return True
 
-    def launch_new_node(self, count):
+    def launch_new_node(self, count, worker_name):
         logger.info(
             "StandardAutoscaler: Queue {} new nodes for launch".format(count))
         self.num_launches_pending.inc(count)
         config = copy.deepcopy(self.config)
+        # TODO this is hacky
+        config['worker_nodes'] = config['worker_nodes'][worker_name]
+        config['worker_nodes']['SubnetIds'] = config['worker_nodes']['SubnetIds']
+        config['worker_nodes']['SecurityGroupIds'] = config['worker_nodes']['SecurityGroupIds']
         self.launch_queue.put((config, count))
 
     def workers(self):
