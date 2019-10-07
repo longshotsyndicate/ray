@@ -574,6 +574,9 @@ class StandardAutoscaler(object):
             with open(self.config_path) as f:
                 new_config = yaml.safe_load(f.read())
             validate_config(new_config)
+            # Inject worker names as resources.
+            for worker_name, worker_config in new_config["worker_nodes"].items():
+                worker_config["Resources"]["worker_type"] = worker_name
             #new_launch_hash = hash_launch_conf(new_config["worker_nodes"],
             #                                   new_config["auth"])
             new_launch_hashes = {hash_launch_conf(worker_config, new_config["auth"]): worker_name
@@ -596,8 +599,8 @@ class StandardAutoscaler(object):
     def target_num_workers(self):
 
         # TODO optimization problem (integer linear programming, probably)
-        # TODO for now, just get the (lexicographically) first one
-        worker_name = sorted(self.config["worker_nodes"])[0]
+        # TODO for now, we can accept an explicit worker type request
+        worker_name = self.resource_requests.pop("worker_type", sorted(self.config["worker_nodes"])[0])
 
         target_frac = self.config["target_utilization_fraction"]
         cur_used = self.load_metrics.approx_workers_used()
@@ -620,8 +623,7 @@ class StandardAutoscaler(object):
             except KeyError:
                 cores_per_worker = 1  # Assume the worst
 
-            #cores_desired = self.resource_requests.pop("CPU")
-            cores_desired = self.resource_requests["CPU"]
+            cores_desired = self.resource_requests.pop("CPU")
 
             ideal_num_workers = max(
                 ideal_num_workers,
@@ -760,8 +762,11 @@ class StandardAutoscaler(object):
 
     def request_resources(self, resources):
         for resource, count in resources.items():
-            self.resource_requests[resource] = max(
-                self.resource_requests[resource], count)
+            if isinstance(count, int):
+                self.resource_requests[resource] = max(
+                    self.resource_requests[resource], count)
+            else:
+                self.resource_requests[resource] = count
 
         logger.info("StandardAutoscaler: resource_requests={}".format(
             self.resource_requests))
@@ -906,7 +911,7 @@ def hash_runtime_conf(file_mounts, extra_objs):
     return _hash_cache[conf_str]
 
 
-def request_resources(num_cpus=None, num_gpus=None):
+def request_resources(num_cpus=None, num_gpus=None, worker_type=None):
     """Remotely request some CPU or GPU resources from the autoscaler.
 
     This function is to be called e.g. on a node before submitting a bunch of
@@ -934,4 +939,9 @@ def request_resources(num_cpus=None, num_gpus=None):
         r.publish(AUTOSCALER_RESOURCE_REQUEST_CHANNEL,
                   json.dumps({
                       "CPU": num_cpus
+                  }))
+    if worker_type is not None:
+        r.publish(AUTOSCALER_RESOURCE_REQUEST_CHANNEL,
+                  json.dumps({
+                      "worker_type": worker_type
                   }))
