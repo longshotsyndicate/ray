@@ -21,3 +21,6 @@ TAG_RAY_LAUNCH_CONFIG = "ray-launch-config"
 
 # Hash of the node runtime config, used to determine if updates are needed
 TAG_RAY_RUNTIME_CONFIG = "ray-runtime-config"
+
+# Tag for the worker type in a multi-worker environment
+TAG_RAY_WORKER_TYPE = "ray-worker-type"

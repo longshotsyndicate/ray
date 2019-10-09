@@ -14,6 +14,7 @@ import time
 from collections import defaultdict
 
 import numpy as np
+from scipy.optimize import linprog
 import ray.services as services
 import yaml
 from ray.services import create_redis_client
@@ -364,6 +365,235 @@ class ConcurrentCounter():
     def value(self):
         with self._lock:
             return self._value
+
+
+class ManualAutoscaler(object):
+    """
+    A manual implementation of the StandardAutoscaler that only fulfils explicit resource requests.
+
+    It supports multiple resource types and multiple worker types, each with a potentially different list of resources
+    associated with it.
+    """
+
+    def __init__(self,
+                 config_path,
+                 load_metrics,
+                 max_launch_batch=AUTOSCALER_MAX_LAUNCH_BATCH,
+                 max_concurrent_launches=AUTOSCALER_MAX_CONCURRENT_LAUNCHES,
+                 max_failures=AUTOSCALER_MAX_NUM_FAILURES,
+                 process_runner=subprocess,
+                 update_interval_s=AUTOSCALER_UPDATE_INTERVAL_S,
+                 redis_address=None,
+                 redis_password=None):
+
+        self.load_metrics = None  # NOTE ignore for now
+        self.process_runner = process_runner
+
+        # Config.
+        self.config_path = config_path
+        self.reload_config(errors_fatal=True)
+
+        # Redis.
+        self.redis_address = redis_address
+        self.redis_password = redis_password
+        self.redis_client = create_redis_client(self.redis_address, password=self.redis_password)
+
+        # Map from node_id to NodeUpdater processes
+        self.updaters = {}
+        self.num_failed_updates = defaultdict(int)
+        self.num_successful_updates = defaultdict(int)
+        self.num_failures = 0
+        self.last_update_time = 0.0
+        self.update_interval_s = update_interval_s
+        self.bringup = True
+
+        # Launch and provision.
+        self.provider = get_node_provider(self.config["provider"], self.config["cluster_name"])
+        self.max_failures = max_failres
+        self.max_launch_batch = max_launch_batch
+        self.max_concurrent_launches = max_concurrent_launches
+
+        self.launch_queue = queue.Queue()
+        self.num_launches_pending = ConcurrentCounter()
+        max_batches = math.ceil(max_concurrent_launches / float(max_launch_batch))
+        for i in range(int(max_batches)):
+            node_launcher = NodeLauncher(provider=self.provider, queue=self.launch_queue,
+                                         index=i, pending=self.num_launches_pending)
+            node_launcher.daemon = True
+            node_launcher.start()
+
+        # Expand local file_mounts to allow ~ in the paths. This can't be done
+        # earlier when the config is written since we might be on different
+        # platform and the expansion would result in wrong path.
+        self.config["file_mounts"] = {
+            remote: os.path.expanduser(local)
+            for remote, local in self.config["file_mounts"].items()
+        }
+
+        for local_path in self.config["file_mounts"].values():
+            assert os.path.exists(local_path)
+
+        self.resource_requests = defaultdict(int)
+
+        logger.info("ManualAutoscaler: {}".format(self.config))
+
+    def reload_config(self, errors_fatal=False):
+        try:
+            with open(self.config_path) as f:
+                new_config = yaml.safe_load(f)
+            validate_config(new_config)
+            self.config = new_config
+
+            # We now have multiple valid launch hashes.
+            self.launch_hashes = {hash_launch_conf(worker_config, new_config["auth"]): worker_name
+                                  for worker_name, worker_config in new_config["worker_nodes"].items()}
+
+            # Don't include worker_start_ray_commands in the runtime hash, since we will want to dynamically update it.
+            self.runtime_hash = hash_runtime_conf(new_config["file_mounts"], [
+                                                  new_config["worker_setup_commands"]])
+        except Exception as e:
+            if errors_fatal:
+                raise e
+            else:
+                logger.exception("ManualAutoscaler: "
+                                 "Errors parsing config.")
+
+    def workers(self):
+        return self.provider.non_terminated_nodes(
+            tag_filters={TAG_RAY_NODE_TYPE: "worker"})
+
+    def request_resources(self, resources):
+        self.resource_requests = copy.deepcopy(resources)
+        logger.info("ManualAutoscaler: resource_requests={}".format(self.resource_requests))
+
+    def optimize_requirements(self):
+
+        if not self.resource_requests:
+            # Keep everything the same.
+            return None
+
+        # Populate worker resources, injecting one unit of worker name to each worker type, and worker costs.
+        worker_resources = {}
+        worker_costs = {}
+        for worker_name, worker_config in self.config["worker_nodes"].items():
+            worker_resources[worker_name] = worker_config["Resources"].copy()
+            worker_resources[worker_name].update({worker_name: 1})
+            worker_costs[worker_name] = worker_config["Cost"]
+        worker_resources = {worker_name: worker_config["Resources"].copy()
+                            for worker_name, worker_config in self.config["worker_nodes"]}
+
+        new_requests = copy.deepcopy(self.resource_requests)
+        self.resource_requests = {}  # reset
+
+        # Arrayize
+        available_resource_types = set()
+        for worker_name, resources in worker_resources.items():
+            for resource_name, _ in resources.items():
+                available_resource_types.add(resource_name)
+
+        requested_resource_types = set(new_requests.keys())
+
+        assert requested_resource_types.issuubset(available_resource_types)
+
+        sorted_workers = sorted(worker_resources.keys())
+        sorted_resources = sorted(available_resource_types)
+
+        cost = np.array([worker_costs[worker_name] for worker_name in sorted_workers])
+        resources_mat = np.array([[worker_resources[worker_name].get(resource_name, 0) for resource_name in sorted_resources]
+                                  for worker_name in sorted_workers]).T
+        request = np.array([new_requests.get(resource_type, 0) for resource_type in sorted_resources])
+
+        # Optimize.
+        # TODO ILP. This is silly.
+        solution = linprog(cost, -resources_mat, -request)
+        # Dictionarize.
+        worker_requirements = {sorted_workers[i]: int(np.ceil(solution['x'][i])) for i in range(len(sorted_workers))}
+
+        return worker_requirements
+
+    def update(self):
+        try:
+            self.reload_config(errors_fatal=False)
+            self._update()
+        except Exception as e:
+            logger.exception("ManualAutoscaler: "
+                             "Error during autoscaling.")
+            self.num_failures += 1
+            if self.num_failures > self.max_failures:
+                logger.critical("ManualAutoscaler: "
+                                "Too many errors, abort.")
+                raise e
+
+    def _update(self):
+
+        now = time.time()
+
+        # Throttle autoscaling updates to this interval to avoid exceeding
+        # rate limits on API calls.
+        if now - self.last_update_time < self.update_interval_s:
+            return
+
+        self.last_update_time = now
+        num_pending = self.num_launches_pending.value
+        nodes = self.workers()
+
+        # Determine new requirements.
+        worker_requirements = self.optimize_requirements()
+
+        # Figure out the delta from the current requirements.
+        if not self.current_requirements:
+            delta_requirements = worker_requirements
+        else:
+            delta_requirements = {worker_name: worker_requirements[worker_name] - self.current_requirements[worker_name]
+                                  for worker_name in self.config["worker_nodes"].keys()}
+
+
+        for worker_name, worker_count in delta_requirements.items():
+            if worker_count < 0:
+                # Take down obsolete nodes.
+                nodes = self.workers()
+
+            elif worker_count > 0:
+                # Spin up new nodes.
+                self.launch_new_node(worker_count, worker_name)
+
+        # Process any completed updates
+        completed = []
+        for node_id, updater in self.updaters.items():
+            if not updater.is_alive():
+                completed.append(node_id)
+        if completed:
+            for node_id in completed:
+                if self.updaters[node_id].exitcode == 0:
+                    self.num_successful_updates[node_id] += 1
+                else:
+                    self.num_failed_updates[node_id] += 1
+                del self.updaters[node_id]
+            # Mark the node as active to prevent the node recovery logic
+            # immediately trying to restart Ray on the new node.
+            self.load_metrics.mark_active(self.provider.internal_ip(node_id))
+            nodes = self.workers()
+            self.log_info_string(nodes, target_workers)
+
+        # Update nodes with out-of-date files
+        T = [
+            threading.Thread(
+                target=self.spawn_updater,
+                args=(node_id, commands),
+            ) for node_id, commands in (self.should_update(node_id)
+                                        for node_id in nodes)
+            if node_id is not None
+        ]
+        for t in T:
+            t.start()
+        for t in T:
+            t.join()
+
+        # Attempt to recover unhealthy nodes
+        for node_id in nodes:
+            self.recover_if_needed(node_id, now)
+
+        self.publish_autoscaler_status(nodes, target_workers)
 
 
 class StandardAutoscaler(object):
@@ -911,37 +1141,72 @@ def hash_runtime_conf(file_mounts, extra_objs):
     return _hash_cache[conf_str]
 
 
-def request_resources(num_cpus=None, num_gpus=None, worker_type=None):
-    """Remotely request some CPU or GPU resources from the autoscaler.
+#def request_resources(num_cpus=None, num_gpus=None, worker_type=None):
+#    """Remotely request some CPU or GPU resources from the autoscaler.
+#
+#    This function is to be called e.g. on a node before submitting a bunch of
+#    ray.remote calls to ensure that resources rapidly become available.
+#
+#    In the future this could be extended to do GPU cores or other custom
+#    resources.
+#
+#    This function is non blocking.
+#
+#    Args:
+#
+#        num_cpus: int -- the number of CPU cores to request
+#        num_gpus: int -- the number of GPUs to request (Not implemented)
+#
+#    """
+#    if num_gpus is not None:
+#        raise NotImplementedError(
+#            "GPU resource is not yet supported through request_resources")
+#    r = services.create_redis_client(
+#        global_worker.node.redis_address,
+#        password=global_worker.node.redis_password)
+#    assert isinstance(num_cpus, int)
+#    if num_cpus > 0:
+#        r.publish(AUTOSCALER_RESOURCE_REQUEST_CHANNEL,
+#                  json.dumps({
+#                      "CPU": num_cpus
+#                  }))
+#    if worker_type is not None:
+#        r.publish(AUTOSCALER_RESOURCE_REQUEST_CHANNEL,
+#                  json.dumps({
+#                      "worker_type": worker_type
+#                  }))
 
-    This function is to be called e.g. on a node before submitting a bunch of
-    ray.remote calls to ensure that resources rapidly become available.
+#def _request_resources(num_cpus=None, num_gpus=None):
+#    """Remotely request some CPU or GPU resources from the autoscaler.
+#    This function is to be called e.g. on a node before submitting a bunch of
+#    ray.remote calls to ensure that resources rapidly become available.
+#    In the future this could be extended to do GPU cores or other custom
+#    resources.
+#    This function is non blocking.
+#    Args:
+#        num_cpus: int -- the number of CPU cores to request
+#        num_gpus: int -- the number of GPUs to request (Not implemented)
+#    """
+#    if num_gpus is not None:
+#        raise NotImplementedError(
+#            "GPU resource is not yet supported through request_resources")
+#    r = services.create_redis_client(
+#        global_worker.node.redis_address,
+#        password=global_worker.node.redis_password)
+#    assert isinstance(num_cpus, int)
+#    if num_cpus > 0:
+#        r.publish(AUTOSCALER_RESOURCE_REQUEST_CHANNEL,
+#                  json.dumps({
+#                      "CPU": num_cpus
+#                  }))
 
-    In the future this could be extended to do GPU cores or other custom
-    resources.
+def request_resources(resources):
 
-    This function is non blocking.
-
-    Args:
-
-        num_cpus: int -- the number of CPU cores to request
-        num_gpus: int -- the number of GPUs to request (Not implemented)
-
-    """
-    if num_gpus is not None:
-        raise NotImplementedError(
-            "GPU resource is not yet supported through request_resources")
     r = services.create_redis_client(
         global_worker.node.redis_address,
         password=global_worker.node.redis_password)
-    assert isinstance(num_cpus, int)
-    if num_cpus > 0:
-        r.publish(AUTOSCALER_RESOURCE_REQUEST_CHANNEL,
-                  json.dumps({
-                      "CPU": num_cpus
-                  }))
-    if worker_type is not None:
-        r.publish(AUTOSCALER_RESOURCE_REQUEST_CHANNEL,
-                  json.dumps({
-                      "worker_type": worker_type
-                  }))
+
+    r.publish(AUTOSCALER_RESOURCE_REQUEST_CHANNEL,
+              json.dumps({resource_type: resource_count
+                          for resource_type, resource_count in resources.items()})
+
